@@ -8,7 +8,7 @@ from pulp import LpProblem, LpVariable, LpMinimize, lpSum, LpStatus, value
 # ---------------------------------------------------------
 st.set_page_config(page_title="介護シフト自動作成", layout="centered")
 st.title("🏥 介護シフト自動作成アプリ")
-st.caption("個別スキル・連勤上限・遅早防止・夜勤専従回数・シフト均等化を考慮します。")
+st.caption("個別スキル・連勤上限・遅早防止・夜勤専従回数・柔軟な日勤設定に対応しています。")
 
 # ---------------------------------------------------------
 # 2. 基本条件の設定
@@ -49,16 +49,23 @@ for d in days:
 monthly_holidays = st.number_input("1人あたりの基本公休数（日）", min_value=1, max_value=15, value=9)
 
 # ---------------------------------------------------------
-# 3. 1日あたりの必要人数
+# 3. 1日あたりの必要人数（日勤は範囲設定が可能）
 # ---------------------------------------------------------
 st.subheader("👥 2. 1日あたりの必要人数")
+
 col1, col2 = st.columns(2)
 with col1:
-    req_hayaban = st.number_input("早番 (7-16)", min_value=0, value=1)
-    req_nikkin = st.number_input("日勤 (9-18)", min_value=0, value=1)
+    req_hayaban = st.number_input("早番 (7-16) 【固定人数】", min_value=0, value=1)
+    req_osoban = st.number_input("遅番 (10-19) 【固定人数】", min_value=0, value=1)
+    req_yakin = st.number_input("夜勤 (16-9) 【固定人数】", min_value=0, value=1)
+
 with col2:
-    req_osoban = st.number_input("遅番 (10-19)", min_value=0, value=1)
-    req_yakin = st.number_input("夜勤 (16-9)", min_value=0, value=1)
+    st.write("▼ 日勤 (9-18) の人数範囲")
+    col_nikkin_min, col_nikkin_max = st.columns(2)
+    with col_nikkin_min:
+        req_nikkin_min = st.number_input("最小", min_value=0, max_value=5, value=0)
+    with col_nikkin_max:
+        req_nikkin_max = st.number_input("最大", min_value=0, max_value=5, value=1)
 
 shifts = ["早", "日", "遅", "夜", "明", "休"]
 
@@ -70,7 +77,7 @@ st.subheader("👤 3. スタッフごとの個別条件設定")
 staff_roles = {}
 max_consecutive_days = {}
 desire_holidays = {}
-night_shift_counts = {}  # 夜勤専従用
+night_shift_counts = {}
 
 role_options = {
     "全シフト可（早/遅/日/夜）": ["早", "日", "遅", "夜", "明", "休"],
@@ -89,7 +96,6 @@ for s in staffs:
         )
         staff_roles[s] = role_options[role_choice]
 
-        # 夜勤専従の場合のみ、月間夜勤回数を指定できる
         if role_choice == "夜勤専用（夜）":
             y_count = st.number_input(
                 "1ヶ月の夜勤回数（回）", 
@@ -131,7 +137,7 @@ for s in staffs:
 st.markdown("---")
 
 if st.button("🚀 シフトを作成する", type="primary"):
-    with st.spinner("AIが夜勤専従回数・均等化を含めて計算中..."):
+    with st.spinner("AIが条件に合わせて最適シフトを計算中..."):
         
         prob = LpProblem("ShiftScheduling", LpMinimize)
         x = {}
@@ -140,7 +146,6 @@ if st.button("🚀 シフトを作成する", type="primary"):
                 for shift in shifts:
                     x[s, d, shift] = LpVariable(f"x_{s}_{d}_{shift}", cat="Binary")
 
-        # 平準化用の補助変数
         max_h = LpVariable("max_h", lowBound=0)
         max_o = LpVariable("max_o", lowBound=0)
         max_y = LpVariable("max_y", lowBound=0)
@@ -158,10 +163,10 @@ if st.button("🚀 シフトを作成する", type="primary"):
                     if shift not in allowed_shifts:
                         prob += x[s, d, shift] == 0
 
-        # 制約3: 夜勤 ➔ 翌日「明」
+        # 制約3: 「明」は前日「夜」の翌日のみ発生
         for s in staffs:
             for d in range(1, num_days):
-                prob += x[s, d + 1, "明"] >= x[s, d, "夜"]
+                prob += x[s, d + 1, "明"] == x[s, d, "夜"]
 
         # 制約4: 「明」 ➔ 翌日「休」
         for s in staffs:
@@ -179,12 +184,12 @@ if st.button("🚀 シフトを作成する", type="primary"):
             for d in range(1, num_days - k + 1):
                 prob += lpSum([x[s, d + i, "休"] for i in range(k + 1)]) >= 1
 
-        # 制約7: 公休数（夜勤専従以外は基本公休数を適用）
+        # 制約7: 公休数
         for s in staffs:
             if night_shift_counts[s] is None:
                 prob += lpSum([x[s, d, "休"] for d in days]) == monthly_holidays
 
-        # 制約8: 夜勤専従の「月間夜勤回数」固定制約
+        # 制約8: 夜勤専従の「月間夜勤回数」固定
         for s in staffs:
             if night_shift_counts[s] is not None:
                 prob += lpSum([x[s, d, "夜"] for d in days]) == night_shift_counts[s]
@@ -194,14 +199,17 @@ if st.button("🚀 シフトを作成する", type="primary"):
             for d in desire_holidays[s]:
                 prob += x[s, d, "休"] == 1
 
-        # 制約10: 必要人数の確保
+        # 【改修点】制約10: 人数制約（早・遅・夜は1人固定、日勤は0〜1人）
         for d in days:
-            prob += lpSum([x[s, d, "早"] for s in staffs]) >= req_hayaban
-            prob += lpSum([x[s, d, "日"] for s in staffs]) >= req_nikkin
-            prob += lpSum([x[s, d, "遅"] for s in staffs]) >= req_osoban
-            prob += lpSum([x[s, d, "夜"] for s in staffs]) >= req_yakin
+            prob += lpSum([x[s, d, "早"] for s in staffs]) == req_hayaban
+            prob += lpSum([x[s, d, "遅"] for s in staffs]) == req_osoban
+            prob += lpSum([x[s, d, "夜"] for s in staffs]) == req_yakin
+            
+            # 日勤は最小〜最大の範囲内（例: 0人以上 1人以下）
+            prob += lpSum([x[s, d, "日"] for s in staffs]) >= req_nikkin_min
+            prob += lpSum([x[s, d, "日"] for s in staffs]) <= req_nikkin_max
 
-        # 制約11: 通常スタッフの平準化（専従以外）
+        # 制約11: 通常スタッフの平準化
         for s in staffs:
             if night_shift_counts[s] is None:
                 if "早" in staff_roles[s]:
@@ -253,7 +261,7 @@ if st.button("🚀 シフトを作成する", type="primary"):
 
             df_full = pd.concat([df_main, df_summary])
 
-            st.write("📋 **シフト表（夜勤専従設定・月間集計付き）**")
+            st.write("📋 **シフト表**")
             st.dataframe(df_full, use_container_width=True)
             
             csv = df_full.to_csv().encode('utf-8-sig')
@@ -264,4 +272,4 @@ if st.button("🚀 シフトを作成する", type="primary"):
                 mime="text/csv"
             )
         else:
-            st.error("❌ 条件を満たすシフトを作成できませんでした。夜勤専従の回数指定や必要人数のバランスを確認してください。")
+            st.error("❌ 条件を満たすシフトを作成できませんでした。スタッフ人数に対して必要人数が多いか、希望休・夜勤回数の指定が厳しすぎる可能性があります。")
