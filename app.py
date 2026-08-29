@@ -7,7 +7,7 @@ from pulp import LpProblem, LpVariable, LpMinimize, lpSum, LpStatus, value
 # ---------------------------------------------------------
 st.set_page_config(page_title="介護シフト自動作成", layout="centered")
 st.title("🏥 介護シフト自動作成アプリ")
-st.caption("夜勤→明け→休みルール、公休数、希望休を考慮してシフトを作成します。")
+st.caption("個別スキル、個別連勤上限、遅早防止、夜勤サイクルを考慮してシフトを作成します。")
 
 # ---------------------------------------------------------
 # 2. 基本条件の設定
@@ -23,11 +23,11 @@ staffs = [s.strip() for s in staff_input.split(",") if s.strip()]
 num_days = st.number_input("作成日数（日）", min_value=1, max_value=31, value=30)
 days = list(range(1, num_days + 1))
 
-# 公休数（純粋な休み）の設定
+# 公休数の設定
 monthly_holidays = st.number_input("1人あたりの純粋な公休数（日）", min_value=1, max_value=15, value=9)
 
 # ---------------------------------------------------------
-# 3. 1日あたりの必要人数（出勤カウント）
+# 3. 1日あたりの必要人数
 # ---------------------------------------------------------
 st.subheader("👥 2. 1日あたりの必要人数")
 col1, col2 = st.columns(2)
@@ -38,26 +38,60 @@ with col2:
     req_osoban = st.number_input("遅番 (10-19)", min_value=0, value=1)
     req_yakin = st.number_input("夜勤 (16-9)", min_value=0, value=1)
 
-# シフト定義（夜勤・明けは出勤扱い、休は純粋な公休）
 shifts = ["早", "日", "遅", "夜", "明", "休"]
 
 # ---------------------------------------------------------
-# 4. 希望休の設定
+# 4. スタッフごとの個別条件設定
 # ---------------------------------------------------------
-st.subheader("📅 3. スタッフごとの希望休設定")
-st.caption("純粋な休み（公休）を希望する日付（半角数字）をカンマ区切りで入力してください（例: 5, 12, 20）")
+st.subheader("👤 3. スタッフごとの個別条件設定")
 
+staff_roles = {}
+max_consecutive_days = {}
 desire_holidays = {}
+
+# 定義可能な可能シフトパターン
+role_options = {
+    "全シフト可（早/遅/日/夜）": ["早", "日", "遅", "夜", "明", "休"],
+    "日勤帯のみ（早/遅/日）": ["早", "日", "遅", "休"],
+    "夜勤専用（夜）": ["夜", "明", "休"],
+    "早・日のみ": ["早", "日", "休"],
+    "遅・日のみ": ["遅", "日", "休"]
+}
+
 for s in staffs:
-    holiday_str = st.text_input(f"{s} の希望休", value="", key=f"holiday_{s}")
-    parsed_days = []
-    for d_str in holiday_str.split(","):
-        d_str = d_str.strip()
-        if d_str.isdigit():
-            d_num = int(d_str)
-            if 1 <= d_num <= num_days:
-                parsed_days.append(d_num)
-    desire_holidays[s] = parsed_days
+    with st.expander(f"【{s}】の設定", expanded=True):
+        # 可能シフト選択
+        role_choice = st.selectbox(
+            "勤務可能なシフト", 
+            options=list(role_options.keys()), 
+            key=f"role_{s}"
+        )
+        staff_roles[s] = role_options[role_choice]
+
+        # 最大連勤数
+        max_work = st.number_input(
+            "最大連勤数（日）", 
+            min_value=2, 
+            max_value=7, 
+            value=5, 
+            key=f"max_work_{s}"
+        )
+        max_consecutive_days[s] = max_work
+
+        # 希望休
+        holiday_str = st.text_input(
+            "希望休（日付をカンマ区切りで入力 例: 5, 12）", 
+            value="", 
+            key=f"holiday_{s}"
+        )
+        parsed_days = []
+        for d_str in holiday_str.split(","):
+            d_str = d_str.strip()
+            if d_str.isdigit():
+                d_num = int(d_str)
+                if 1 <= d_num <= num_days:
+                    parsed_days.append(d_num)
+        desire_holidays[s] = parsed_days
 
 # ---------------------------------------------------------
 # 5. シフト計算ロジック
@@ -65,7 +99,7 @@ for s in staffs:
 st.markdown("---")
 
 if st.button("🚀 シフトを作成する", type="primary"):
-    with st.spinner("AIが条件を満たすシフトを計算中..."):
+    with st.spinner("AIが全制約を満たすシフトを計算中..."):
         
         prob = LpProblem("ShiftScheduling", LpMinimize)
         x = {}
@@ -79,43 +113,63 @@ if st.button("🚀 シフトを作成する", type="primary"):
             for d in days:
                 prob += lpSum([x[s, d, shift] for shift in shifts]) == 1
 
-        # 制約2: 夜勤(16-9)の翌日は必ず「明（出勤扱い）」
+        # 制約2: 可能シフトのみ割り振る
+        for s in staffs:
+            allowed_shifts = staff_roles[s]
+            for d in days:
+                for shift in shifts:
+                    if shift not in allowed_shifts:
+                        prob += x[s, d, shift] == 0
+
+        # 制約3: 夜勤(16-9) ➔ 翌日「明」
         for s in staffs:
             for d in range(1, num_days):
                 prob += x[s, d + 1, "明"] >= x[s, d, "夜"]
 
-        # 制約3: 「明」の翌日は必ず「休（純粋な公休）」
+        # 制約4: 「明」 ➔ 翌日「休」
         for s in staffs:
             for d in range(1, num_days):
                 prob += x[s, d + 1, "休"] >= x[s, d, "明"]
 
-        # 制約4: 公休数は「休」の回数のみでぴったりカウント（「明」は含めない）
+        # 制約5: 遅番 ➔ 翌日「早番」の禁止（遅早禁止）
+        for s in staffs:
+            for d in range(1, num_days):
+                prob += x[s, d + 1, "早"] + x[s, d, "遅"] <= 1
+
+        # 制約6: スタッフごとの最大連勤数制限
+        for s in staffs:
+            k = max_consecutive_days[s]
+            # k+1日間のうち、公休（休）が最低1日は入るようにする（明は勤務扱い）
+            for d in range(1, num_days - k + 1):
+                prob += lpSum([x[s, d + i, "休"] for i in range(k + 1)]) >= 1
+
+        # 制約7: 公休数は「休」の回数のみでカウント
         for s in staffs:
             prob += lpSum([x[s, d, "休"] for d in days]) == monthly_holidays
 
-        # 制約5: 希望休の反映（指定日は必ず「休」）
+        # 制約8: 希望休の反映
         for s in staffs:
             for d in desire_holidays[s]:
                 prob += x[s, d, "休"] == 1
 
-        # 制約6: 各シフトの必要人数の確保
+        # 制約9: 必要人数の確保
         for d in days:
             prob += lpSum([x[s, d, "早"] for s in staffs]) >= req_hayaban
             prob += lpSum([x[s, d, "日"] for s in staffs]) >= req_nikkin
             prob += lpSum([x[s, d, "遅"] for s in staffs]) >= req_osoban
             prob += lpSum([x[s, d, "夜"] for s in staffs]) >= req_yakin
 
-        # 目的関数: 夜勤回数の平準化（特定の労働者に偏らないように分散）
+        # 目的関数: 夜勤回数の平準化
         prob += lpSum([x[s, d, "夜"] for s in staffs for d in days])
 
         # 計算実行
         status = prob.solve()
 
         # ---------------------------------------------------------
-        # 6. 結果の表示・ダウンロード
+        # 6. 結果表示
         # ---------------------------------------------------------
         if LpStatus[status] == "Optimal":
-            st.success("✅ シフト表を作成しました！（「明」は出勤扱い、「休」のみ公休として9日カウント）")
+            st.success("✅ すべての個別制約・遅早禁止を満たしたシフト表を作成しました！")
             
             result_data = {}
             for s in staffs:
@@ -137,5 +191,4 @@ if st.button("🚀 シフトを作成する", type="primary"):
                 mime="text/csv"
             )
         else:
-            st.error("❌ 条件を満たすシフトを作成できませんでした。スタッフ人数に対して必要人数が多いか、希望休が重なりすぎている可能性があります。")
-
+            st.error("❌ 条件を満たすシフトを作成できませんでした。日勤のみの人が多くて夜勤枠が埋まらない、あるいは連勤上限や希望休が厳しすぎる可能性があります。")
