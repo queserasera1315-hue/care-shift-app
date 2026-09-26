@@ -1,1 +1,3 @@
-streamlit pandas pulp==2.8.0
+streamlit
+pandas
+pulp
