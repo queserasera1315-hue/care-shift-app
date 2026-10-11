@@ -21,7 +21,7 @@ with col_m:
 with col_y:
     month = st.number_input("月", min_value=1, max_value=12, value=today.month)
 with col_num:
-    num_staff = st.slider("スタッフ人数", min_value=6, max_value=8, value=8, key="main_staff_slider")
+    num_staff = st.slider("スタッフ人数", min_value=6, max_value=8, value=6, key="main_staff_slider")
 
 # 日数の計算
 if month in [1, 3, 5, 7, 8, 10, 12]:
@@ -45,7 +45,7 @@ shifts = ["早出", "日勤", "遅出", "夜勤", "明け", "公休", "有休"]
 # 3. スタッフごとの個別設定（働き方 ＆ 連勤上限）
 # --------------------------------------------------
 st.header("2. スタッフの個別設定（働き方・連勤上限）")
-st.caption("※ スタッフごとの勤務スタイル（遅出パート等）と、最大連勤数を設定できます。")
+st.caption("※ 夜勤専従スタッフは月8〜9回程度夜勤に入る設定になります。")
 
 work_types = {}
 staff_max_work = {}
@@ -89,7 +89,7 @@ col_r1, col_r2, col_r3, col_r4 = st.columns(4)
 with col_r1:
     target_off = st.number_input("月間公休数 (日/人)", min_value=0, value=9)
 with col_r2:
-    max_night = st.number_input("月間夜勤上限 (回/人)", min_value=0, value=5)
+    max_night = st.number_input("月間夜勤上限 (通常勤務用)", min_value=0, value=4)
 with col_r3:
     max_early = st.number_input("月間早出上限 (回/人)", min_value=0, value=0)
 with col_r4:
@@ -143,12 +143,15 @@ if st.button("🚀 シフトを作成する", type="primary"):
 
             model += lpSum([x[s, d, "公休"] for d in days]) == target_off
 
-            # 働き方区分（専従・パート）の制御
+            # 働き方区分ごとの制御
             if w_type == "夜勤専従":
                 for d in days:
                     model += x[s, d, "早出"] == 0
                     model += x[s, d, "日勤"] == 0
                     model += x[s, d, "遅出"] == 0
+                # 夜勤専従は月8〜9回夜勤に入る
+                model += lpSum([x[s, d, "夜勤"] for d in days]) >= 8
+                model += lpSum([x[s, d, "夜勤"] for d in days]) <= 9
             elif w_type == "日勤専従（夜勤不可）":
                 for d in days:
                     model += x[s, d, "夜勤"] == 0
@@ -159,15 +162,14 @@ if st.button("🚀 シフトを作成する", type="primary"):
                     model += x[s, d, "日勤"] == 0
                     model += x[s, d, "夜勤"] == 0
                     model += x[s, d, "明け"] == 0
-                # 月間遅出回数は最大7回まで
                 model += lpSum([x[s, d, "遅出"] for d in days]) <= 7
             else:
                 model += lpSum([x[s, d, "夜勤"] for d in days]) <= max_night
 
-            if max_early > 0 and w_type != "遅出パート（遅出のみ・月7回以内）":
+            if max_early > 0 and w_type not in ["遅出パート（遅出のみ・月7回以内）", "夜勤専従"]:
                 model += lpSum([x[s, d, "早出"] for d in days]) <= max_early
 
-            if max_late > 0 and w_type != "遅出パート（遅出のみ・月7回以内）":
+            if max_late > 0 and w_type not in ["遅出パート（遅出のみ・月7回以内）", "夜勤専従"]:
                 model += lpSum([x[s, d, "遅出"] for d in days]) <= max_late
 
             for d in days:
@@ -189,7 +191,7 @@ if st.button("🚀 シフトを作成する", type="primary"):
                 for d in range(1, num_days - 1):
                     model += x[s, d, "夜勤"] <= x[s, d + 2, "公休"] + x[s, d + 2, "有休"]
 
-            if w_type not in ["日勤専従（夜勤不可）", "遅出パート（遅出のみ・月7回以内）"]:
+            if w_type not in ["日勤専従（夜勤不可）", "遅出パート（遅出のみ・月7回以内）", "夜勤専従"]:
                 mid = num_days // 2
                 fh = lpSum([x[s, d, "夜勤"] for d in range(1, mid + 1)])
                 sh = lpSum([x[s, d, "夜勤"] for d in range(mid + 1, num_days + 1)])
