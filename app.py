@@ -29,15 +29,14 @@ else:
 
 days = list(range(1, num_days + 1))
 
-# スタッフ人数の選択（6人、7人、8人を確実に切り替え）
-st.sidebar.subheader("👥 スタッフ人数・登録")
-num_staff = st.sidebar.slider("スタッフ人数", min_value=6, max_value=8, value=8)
+# --- スタッフ入力（カンマ区切りで何人でも自由に増減可能） ---
+st.sidebar.subheader("👥 スタッフ登録")
+st.sidebar.caption("※ 6人でも7人でも8人でも、カンマ区切りで自由に変更できます")
+default_staff = "スタッフA, スタッフB, スタッフC, スタッフD, スタッフE, スタッフF, スタッフG, スタッフH"
+staff_input = st.sidebar.text_area("スタッフ名（カンマ区切り）", default_staff)
+staff_list = [s.strip() for s in staff_input.split(",") if s.strip()]
 
-# 人数に応じて自動でスタッフリストを生成（A, B, C, D, E, F, G, H）
-all_possible_staff = ["スタッフA", "スタッフB", "スタッフC", "スタッフD", "スタッフE", "スタッフF", "スタッフG", "スタッフH"]
-staff_list = all_possible_staff[:num_staff]
-
-st.sidebar.write(f"現在のメンバー: {', '.join(staff_list)}")
+st.sidebar.info(f"現在のスタッフ数: **{len(staff_list)}人**")
 
 # 勤務区分
 shifts = ["早出", "日勤", "遅出", "夜勤", "明け", "公休", "有休"]
@@ -126,7 +125,7 @@ st.markdown("---")
 
 if st.button("🚀 シフトを作成する", type="primary"):
     if not staff_list:
-        st.error("スタッフを入力してください。")
+        st.error("スタッフを1人以上入力してください。")
     else:
         model = LpProblem("Care_Shift_Scheduling", LpMinimize)
         
