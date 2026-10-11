@@ -29,43 +29,47 @@ else:
 
 days = list(range(1, num_days + 1))
 
-# スタッフリストの人数切替（6人・7人・8人対応）
-st.sidebar.subheader("👥 スタッフ登録・人数切替")
-staff_preset = st.sidebar.radio("スタッフ人数モード", ["6人モード", "7人モード", "8人モード"], index=2)
+# スタッフ人数の選択（6人、7人、8人を確実に切り替え）
+st.sidebar.subheader("👥 スタッフ人数・登録")
+num_staff = st.sidebar.slider("スタッフ人数", min_value=6, max_value=8, value=8)
 
-if staff_preset == "6人モード":
-    default_staff = "スタッフA, スタッフB, スタッフC, スタッフD, スタッフE, スタッフF"
-elif staff_preset == "7人モード":
-    default_staff = "スタッフA, スタッフB, スタッフC, スタッフD, スタッフE, スタッフF, スタッフG"
-else:
-    default_staff = "スタッフA, スタッフB, スタッフC, スタッフD, スタッフE, スタッフF, スタッフG, スタッフH"
+# 人数に応じて自動でスタッフリストを生成（A, B, C, D, E, F, G, H）
+all_possible_staff = ["スタッフA", "スタッフB", "スタッフC", "スタッフD", "スタッフE", "スタッフF", "スタッフG", "スタッフH"]
+staff_list = all_possible_staff[:num_staff]
 
-staff_input = st.sidebar.text_area("スタッフ名（カンマ区切り）", default_staff)
-staff_list = [s.strip() for s in staff_input.split(",") if s.strip()]
+st.sidebar.write(f"現在のメンバー: {', '.join(staff_list)}")
 
 # 勤務区分
 shifts = ["早出", "日勤", "遅出", "夜勤", "明け", "公休", "有休"]
 
 # --------------------------------------------------
-# 3. スタッフごとの働き方区分（専従設定）
+# 3. スタッフごとの個別設定（働き方 ＆ 連勤上限）
 # --------------------------------------------------
-st.header("1. スタッフの働き方（専従）設定")
-st.caption("※ スタッフごとの勤務スタイルを選択してください。")
+st.header("1. スタッフの個別設定（働き方・連勤上限）")
+st.caption("※ スタッフごとの勤務スタイルと、人ごとの最大連勤数（何連勤まで許容するか）を設定できます。")
 
 work_types = {}
-cols_per_row = 4
-for i in range(0, len(staff_list), cols_per_row):
-    cols = st.columns(cols_per_row)
-    for j, s in enumerate(staff_list[i:i+cols_per_row]):
-        with cols[j]:
-            work_types[s] = st.selectbox(
-                f"{s} の勤務区分",
-                ["通常", "夜勤専従", "日勤専従（夜勤不可）"],
-                key=f"wt_{s}"
-            )
+staff_max_work = {}
+
+for s in staff_list:
+    st.markdown(f"**👤 {s}**")
+    c1, c2 = st.columns(2)
+    with c1:
+        work_types[s] = st.selectbox(
+            f"勤務区分",
+            ["通常", "夜勤専従", "日勤専従（夜勤不可）"],
+            key=f"wt_{s}"
+        )
+    with c2:
+        staff_max_work[s] = st.number_input(
+            f"最大連勤数 (日)",
+            min_value=1, max_value=10, value=5,
+            key=f"mw_{s}"
+        )
+    st.markdown("---")
 
 # --------------------------------------------------
-# 4. 1日の必要人数・月間回数ルール
+# 4. 1日の必要人数・月間共通ルール
 # --------------------------------------------------
 st.header("2. 1日の必要人数の設定")
 col_req1, col_req2, col_req3, col_req4, col_req5 = st.columns(5)
@@ -81,7 +85,7 @@ with col_req4:
 with col_req5:
     req_night = st.number_input("夜勤 (人/日)", min_value=0, value=1)
 
-st.header("3. 1ヶ月の勤務上限・ルール設定")
+st.header("3. 1ヶ月の共通ルール設定")
 col_m1, col_m2, col_m3, col_m4 = st.columns(4)
 with col_m1:
     target_off = st.number_input("月間公休数 (日/人)", min_value=0, value=9)
@@ -92,11 +96,7 @@ with col_m3:
 with col_m4:
     max_late = st.number_input("月間遅出上限 (回/人・0で無制限)", min_value=0, value=0)
 
-col_r1, col_r2 = st.columns(2)
-with col_r1:
-    max_work = st.number_input("最大連続勤務 (日)", min_value=1, value=5)
-with col_r2:
-    opt_night_off = st.checkbox("夜勤 → 明け → 公休（または有休）を必須にする", value=True)
+opt_night_off = st.checkbox("夜勤 → 明け → 公休（または有休）を必須にする", value=True)
 
 # --------------------------------------------------
 # 5. 同時勤務NG（重なってほしくない）ペアの設定
@@ -143,6 +143,7 @@ if st.button("🚀 シフトを作成する", type="primary"):
         # --- スタッフごとの制約条件 ---
         for s in staff_list:
             w_type = work_types[s]
+            s_max_work = staff_max_work[s] # スタッフごとの最大連勤数
 
             # 1日1シフト
             for d in days:
@@ -178,12 +179,12 @@ if st.button("🚀 シフトを作成する", type="primary"):
                 if val in shifts:
                     model += x[s, d, val] == 1
 
-            # 連勤上限
-            for d in range(1, num_days - max_work + 1):
+            # スタッフごとの個別連勤上限
+            for d in range(1, num_days - s_max_work + 1):
                 work_sum = lpSum([x[s, d + i, sh] 
-                                  for i in range(max_work + 1) 
+                                  for i in range(s_max_work + 1) 
                                   for sh in ["早出", "日勤", "遅出", "夜勤"]])
-                model += work_sum <= max_work
+                model += work_sum <= s_max_work
 
             # 夜勤のルール（翌日は明け、連続夜勤は不可）
             for d in days[:-1]:
