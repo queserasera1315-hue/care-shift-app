@@ -29,10 +29,18 @@ else:
 
 days = list(range(1, num_days + 1))
 
-# スタッフリスト
-st.sidebar.subheader("👥 スタッフ登録")
-default_staff = "スタッフA, スタッフB, スタッフC, スタッフD, スタッフE, スタッフF, スタッフG, スタッフH"
-staff_input = st.sidebar.text_area("カンマ区切りで入力", default_staff)
+# スタッフリストの人数切替（6人・7人・8人対応）
+st.sidebar.subheader("👥 スタッフ登録・人数切替")
+staff_preset = st.sidebar.radio("スタッフ人数モード", ["6人モード", "7人モード", "8人モード"], index=2)
+
+if staff_preset == "6人モード":
+    default_staff = "スタッフA, スタッフB, スタッフC, スタッフD, スタッフE, スタッフF"
+elif staff_preset == "7人モード":
+    default_staff = "スタッフA, スタッフB, スタッフC, スタッフD, スタッフE, スタッフF, スタッフG"
+else:
+    default_staff = "スタッフA, スタッフB, スタッフC, スタッフD, スタッフE, スタッフF, スタッフG, スタッフH"
+
+staff_input = st.sidebar.text_area("スタッフ名（カンマ区切り）", default_staff)
 staff_list = [s.strip() for s in staff_input.split(",") if s.strip()]
 
 # 勤務区分
@@ -42,7 +50,7 @@ shifts = ["早出", "日勤", "遅出", "夜勤", "明け", "公休", "有休"]
 # 3. スタッフごとの働き方区分（専従設定）
 # --------------------------------------------------
 st.header("1. スタッフの働き方（専従）設定")
-st.caption("※ 夜勤専従や日勤のみなど、スタッフごとの勤務スタイルを選択してください。")
+st.caption("※ スタッフごとの勤務スタイルを選択してください。")
 
 work_types = {}
 cols_per_row = 4
@@ -91,16 +99,28 @@ with col_r2:
     opt_night_off = st.checkbox("夜勤 → 明け → 公休（または有休）を必須にする", value=True)
 
 # --------------------------------------------------
-# 5. 希望休・個別シフト入力
+# 5. 同時勤務NG（重なってほしくない）ペアの設定
 # --------------------------------------------------
-st.header("4. スタッフごとの勤務希望（希望休・指定シフト）入力")
+st.header("4. 同時出勤NGペアの設定（オプション）")
+st.caption("💡 同じ日に一緒に働かせたくない（または同じシフトに入ってほしくない）スタッフの組み合わせがあれば設定できます。")
+
+col_p1, col_p2 = st.columns(2)
+with col_p1:
+    exclude_staff1 = st.selectbox("スタッフ1 (ペアA)", ["なし"] + staff_list, key="ex1")
+with col_p2:
+    exclude_staff2 = st.selectbox("スタッフ2 (ペアB)", ["なし"] + staff_list, key="ex2")
+
+# --------------------------------------------------
+# 6. 希望休・個別シフト入力
+# --------------------------------------------------
+st.header("5. スタッフごとの勤務希望（希望休・指定シフト）入力")
 st.caption("💡 入力方法: 固定したいマスに半角/全角で名称（例: `公休`, `有休`, `早出`, `日勤`, `遅出`, `夜勤`）を直接入力してください。空欄は自動調整されます。")
 
 init_data = {f"{d}日": [""] * len(staff_list) for d in days}
 df_requests = st.data_editor(pd.DataFrame(init_data, index=staff_list), key="req_table")
 
 # --------------------------------------------------
-# 6. シフト自動生成実行
+# 7. シフト自動生成実行
 # --------------------------------------------------
 st.markdown("---")
 
@@ -183,17 +203,20 @@ if st.button("🚀 シフトを作成する", type="primary"):
                 model += fh - sh <= 2
                 model += sh - fh <= 2
 
+        # --- 同時出勤NGペアの制約 ---
+        if exclude_staff1 != "なし" and exclude_staff2 != "なし" and exclude_staff1 != exclude_staff2:
+            for d in days:
+                work_sh = ["早出", "日勤", "遅出", "夜勤"]
+                s1_working = lpSum([x[exclude_staff1, d, sh] for sh in work_sh])
+                s2_working = lpSum([x[exclude_staff2, d, sh] for sh in work_sh])
+                model += s1_working + s2_working <= 1
+
         # --- 日ごとの必要人数制約 ---
         for d in days:
             model += lpSum([x[s, d, "早出"] for s in staff_list]) >= req_early
-            
-            # 日勤人数の範囲（最小〜最大）
             model += lpSum([x[s, d, "日勤"] for s in staff_list]) >= min_day
             model += lpSum([x[s, d, "日勤"] for s in staff_list]) <= max_day
-            
             model += lpSum([x[s, d, "夜勤"] for s in staff_list]) >= req_night
-            
-            # 人手不足の時は遅出を0人にして自動調整
             model += lpSum([x[s, d, "遅出"] for s in staff_list]) + late_shortage[d] >= req_late
 
         # 計算実行
@@ -202,7 +225,6 @@ if st.button("🚀 シフトを作成する", type="primary"):
         if LpStatus[status] == "Optimal":
             st.success("🎉 シフトを作成しました！")
             
-            # 結果出力
             result = {}
             for s in staff_list:
                 row = []
@@ -216,9 +238,8 @@ if st.button("🚀 シフトを作成する", type="primary"):
             df_res = pd.DataFrame(result, index=[f"{d}日" for d in days]).T
             st.dataframe(df_res, use_container_width=True)
             
-            # 遅出調整の通知
             short_days = [d for d in days if value(late_shortage[d]) > 0]
             if short_days:
                 st.info(f"💡 以下の日は人員調整のため「遅出」を0人（または減員）に調整しました: {', '.join([f'{d}日' for d in short_days])}")
         else:
-            st.error("この条件では作成できませんでした。希望休や日勤・遅出の人数設定を緩めてお試しください。")
+            st.error("この条件では作成できませんでした。スタッフ人数、希望休、または同時出勤NGの組み合わせが厳しすぎないか見直してください。")
