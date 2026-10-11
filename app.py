@@ -40,6 +40,7 @@ staff_list = all_staff_pool[:num_staff]
 st.info(f"現在の対象スタッフ ({num_staff}人): **{', '.join(staff_list)}**")
 
 shifts = ["早出", "日勤", "遅出", "夜勤", "明け", "公休", "有休"]
+work_shifts = ["早出", "日勤", "遅出", "夜勤"]
 
 # --------------------------------------------------
 # 3. スタッフの個別設定（働き方 ＆ 連勤上限）
@@ -88,16 +89,32 @@ with col_r2:
     max_night_normal = st.number_input("月間夜勤上限 (通常スタッフ)", min_value=0, value=4)
 
 # --------------------------------------------------
-# 5. 勤務希望・希望休の入力
+# 5. シフト別の組み合わせNGペアの設定
 # --------------------------------------------------
-st.header("4. 勤務希望（希望休・指定シフト）")
+st.header("4. シフト別・同時勤務NGペアの設定（オプション）")
+st.caption("💡 「このスタッフがこのシフトのとき、別のスタッフがこのシフトになるのは避けたい」という組み合わせを設定できます。")
+
+col_sp1, col_sp2, col_sp3, col_sp4 = st.columns(4)
+with col_sp1:
+    pair_staff1 = st.selectbox("スタッフ1", ["なし"] + staff_list, key="ps1")
+with col_sp2:
+    pair_shift1 = st.selectbox("スタッフ1のシフト", work_shifts, key="psh1")
+with col_sp3:
+    pair_staff2 = st.selectbox("スタッフ2", ["なし"] + staff_list, key="ps2")
+with col_sp4:
+    pair_shift2 = st.selectbox("スタッフ2のシフト", work_shifts, key="psh2")
+
+# --------------------------------------------------
+# 6. 勤務希望・希望休の入力
+# --------------------------------------------------
+st.header("5. 勤務希望（希望休・指定シフト）")
 st.caption("💡 固定したいマスに名称（例: `公休`, `有休`, `早出`, `遅出`）を直接入力してください。空欄は自動で埋まります。")
 
 init_data = {f"{d}日": [""] * len(staff_list) for d in days}
 df_requests = st.data_editor(pd.DataFrame(init_data, index=staff_list), key=f"req_table_{num_staff}")
 
 # --------------------------------------------------
-# 6. シフト自動生成実行
+# 7. シフト自動生成実行
 # --------------------------------------------------
 st.markdown("---")
 
@@ -111,8 +128,7 @@ if st.button("🚀 シフトを作成する", type="primary"):
     # 遅出の不足を許容する調整用変数（エラー防止の保険）
     late_shortage = {d: LpVariable(f"late_shortage_{d}", lowBound=0, cat="Integer") for d in days}
 
-    # 公平性・偏り防止のためのペナルティ変数（通常スタッフの早出・遅出・夜勤の偏りを抑える）
-    # 目的関数：不足を最小化しつつ、偏りを均す
+    # 公平性・偏り防止のためのペナルティ変数
     model += lpSum([late_shortage[d] * 5000 for d in days])
 
     for s in staff_list:
@@ -165,7 +181,7 @@ if st.button("🚀 シフトを作成する", type="primary"):
         for d in range(1, num_days - s_max_work + 1):
             work_sum = lpSum([x[s, d + i, sh] 
                               for i in range(s_max_work + 1) 
-                              for sh in ["早出", "日勤", "遅出", "夜勤"]])
+                              for sh in work_shifts])
             model += work_sum <= s_max_work
 
         # 夜勤のルール：夜勤の翌日は必ず「明け」、連続夜勤禁止
@@ -176,6 +192,12 @@ if st.button("🚀 シフトを作成する", type="primary"):
         # 夜勤のあとは必ず休む（明けの翌日は必ず公休または有休）
         for d in range(1, num_days):
             model += x[s, d, "明け"] <= x[s, d + 1, "公休"] + x[s, d + 1, "有休"]
+
+    # シフト別・同時勤務NGペアの制約
+    if pair_staff1 != "なし" and pair_staff2 != "なし" and pair_staff1 != pair_staff2:
+        for d in days:
+            # スタッフ1が指定シフト、かつ スタッフ2が指定シフト に同時になることを禁止
+            model += x[pair_staff1, d, pair_shift1] + x[pair_staff2, d, pair_shift2] <= 1
 
     # 1日の必要人数を満たす制約
     for d in days:
@@ -224,17 +246,14 @@ if st.button("🚀 シフトを作成する", type="primary"):
 
         with tab2:
             st.subheader("スタッフ別 勤務回数集計")
-            # 各スタッフのシフト回数を集計
             summary_data = []
             for s in staff_list:
                 s_counts = {sh: list(result[s]).count(sh) for sh in shifts}
                 s_counts["スタッフ名"] = s
-                # 実働日数（公休・有休・明け以外）
                 s_counts["出勤日数"] = num_days - (s_counts.get("公休", 0) + s_counts.get("有休", 0))
                 summary_data.append(s_counts)
             
             df_summary = pd.DataFrame(summary_data)
-            # 列の順番整理
             cols_order = ["スタッフ名", "出勤日数", "早出", "日勤", "遅出", "夜勤", "明け", "公休", "有休"]
             df_summary = df_summary[[c for c in cols_order if c in df_summary.columns]]
             
@@ -246,4 +265,4 @@ if st.button("🚀 シフトを作成する", type="primary"):
             st.warning(f"💡 一部の日程で人員調整のため「遅出」を0人に調整した日があります: {', '.join([f'{d}日' for d in short_days])}")
             
     else:
-        st.error("この条件では作成できませんでした。スタッフの人数、または特定の希望休が重なりすぎていないか確認してください。")
+        st.error("この条件では作成できませんでした。スタッフの人数、または特定の希望休やNGペアの制約が厳しすぎていないか確認してください。")
