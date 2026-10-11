@@ -29,14 +29,16 @@ else:
 
 days = list(range(1, num_days + 1))
 
-# --- スタッフ入力（カンマ区切りで何人でも自由に増減可能） ---
-st.sidebar.subheader("👥 スタッフ登録")
-st.sidebar.caption("※ 6人でも7人でも8人でも、カンマ区切りで自由に変更できます")
-default_staff = "スタッフA, スタッフB, スタッフC, スタッフD, スタッフE, スタッフF, スタッフG, スタッフH"
-staff_input = st.sidebar.text_area("スタッフ名（カンマ区切り）", default_staff)
-staff_list = [s.strip() for s in staff_input.split(",") if s.strip()]
+# --- スタッフ人数のスライダー選択（確実に画面に反映させるためスライダーと連動） ---
+st.sidebar.subheader("👥 スタッフ登録・人数変更")
+num_staff = st.sidebar.slider("スタッフ人数を選択", min_value=6, max_value=8, value=8, key="slider_num_staff")
 
-st.sidebar.info(f"現在のスタッフ数: **{len(staff_list)}人**")
+# 人数に応じて自動でスタッフリストを構築
+all_staff_pool = ["スタッフA", "スタッフB", "スタッフC", "スタッフD", "スタッフE", "スタッフF", "スタッフG", "スタッフH"]
+staff_list = all_staff_pool[:num_staff]
+
+st.sidebar.write(f"現在の対象スタッフ ({num_staff}人):")
+st.sidebar.code(", ".join(staff_list))
 
 # 勤務区分
 shifts = ["早出", "日勤", "遅出", "夜勤", "明け", "公休", "有休"]
@@ -55,13 +57,13 @@ for s in staff_list:
     c1, c2 = st.columns(2)
     with c1:
         work_types[s] = st.selectbox(
-            f"勤務区分",
+            f"勤務区分 ({s})",
             ["通常", "夜勤専従", "日勤専従（夜勤不可）"],
             key=f"wt_{s}"
         )
     with c2:
         staff_max_work[s] = st.number_input(
-            f"最大連勤数 (日)",
+            f"最大連勤数 ({s})",
             min_value=1, max_value=10, value=5,
             key=f"mw_{s}"
         )
@@ -115,8 +117,9 @@ with col_p2:
 st.header("5. スタッフごとの勤務希望（希望休・指定シフト）入力")
 st.caption("💡 入力方法: 固定したいマスに半角/全角で名称（例: `公休`, `有休`, `早出`, `日勤`, `遅出`, `夜勤`）を直接入力してください。空欄は自動調整されます。")
 
+# 人数や月が変わったときにテーブルを正しく再生成するためのキー設定
 init_data = {f"{d}日": [""] * len(staff_list) for d in days}
-df_requests = st.data_editor(pd.DataFrame(init_data, index=staff_list), key="req_table")
+df_requests = st.data_editor(pd.DataFrame(init_data, index=staff_list), key=f"req_table_{num_staff}")
 
 # --------------------------------------------------
 # 7. シフト自動生成実行
@@ -125,7 +128,7 @@ st.markdown("---")
 
 if st.button("🚀 シフトを作成する", type="primary"):
     if not staff_list:
-        st.error("スタッフを1人以上入力してください。")
+        st.error("スタッフを1人以上選択してください。")
     else:
         model = LpProblem("Care_Shift_Scheduling", LpMinimize)
         
@@ -142,7 +145,7 @@ if st.button("🚀 シフトを作成する", type="primary"):
         # --- スタッフごとの制約条件 ---
         for s in staff_list:
             w_type = work_types[s]
-            s_max_work = staff_max_work[s] # スタッフごとの最大連勤数
+            s_max_work = staff_max_work[s] # スタッフごとの個別最大連勤数
 
             # 1日1シフト
             for d in days:
