@@ -184,19 +184,22 @@ if st.button("🚀 シフトを作成する", type="primary"):
                               for sh in work_shifts])
             model += work_sum <= s_max_work
 
-        # 夜勤のルール：夜勤の翌日は必ず「明け」、連続夜勤禁止
-        for d in days[:-1]:
-            model += x[s, d, "夜勤"] <= x[s, d + 1, "明け"]
-            model += x[s, d, "夜勤"] + x[s, d + 1, "夜勤"] <= 1
-
-        # 夜勤のあとは必ず休む（明けの翌日は必ず公休または有休）
+        # 夜勤まわりの厳格なルール：
+        # 1. 夜勤の翌日は必ず「明け」
+        # 2. 連続夜勤の禁止
+        # 3. 「明け」の日は、その前日が必ず「夜勤」でなければならない
+        # 4. 「明け」の翌日は必ず「公休」または「有休」
         for d in range(1, num_days):
+            model += x[s, d, "夜勤"] <= x[s, d + 1, "明け"]
+            model += x[s, d + 1, "明け"] <= x[s, d, "夜勤"]
             model += x[s, d, "明け"] <= x[s, d + 1, "公休"] + x[s, d + 1, "有休"]
+
+        for d in days[:-1]:
+            model += x[s, d, "夜勤"] + x[s, d + 1, "夜勤"] <= 1
 
     # シフト別・同時勤務NGペアの制約
     if pair_staff1 != "なし" and pair_staff2 != "なし" and pair_staff1 != pair_staff2:
         for d in days:
-            # スタッフ1が指定シフト、かつ スタッフ2が指定シフト に同時になることを禁止
             model += x[pair_staff1, d, pair_shift1] + x[pair_staff2, d, pair_shift2] <= 1
 
     # 1日の必要人数を満たす制約
@@ -204,7 +207,7 @@ if st.button("🚀 シフトを作成する", type="primary"):
         model += lpSum([x[s, d, "早出"] for s in staff_list]) >= req_early
         model += lpSum([x[s, d, "日勤"] for s in staff_list]) >= req_day
         model += lpSum([x[s, d, "夜勤"] for s in staff_list]) >= req_night
-        model += lpSum([x[s, d, "遅出"] for s in staff_list]) + late_shortage[d] >= req_late
+        model += lpSum([x[s, d, "遅出"] for s in staff_list] ) + late_shortage[d] >= req_late
 
     status = model.solve()
 
@@ -225,27 +228,42 @@ if st.button("🚀 シフトを作成する", type="primary"):
         df_res = pd.DataFrame(result, index=[f"{d}日" for d in days]).T
         
         # --- 表示タブ切り替え ---
-        tab1, tab2 = st.tabs(["📅 シフト表", "📊 スタッフ別 集計サマリー"])
+        tab1, tab2 = st.tabs(["📅 シフト表 ＆ 日別人数", "📊 スタッフ別 集計サマリー"])
         
         with tab1:
             st.subheader("月間シフト一覧")
             st.dataframe(df_res, use_container_width=True)
             
+            # --- 💡 日別の人数集計テーブルを作成 ---
+            st.subheader("📅 日別の配置人数チェック（早出・日勤・遅出・夜勤）")
+            daily_counts = {}
+            for d in days:
+                d_key = f"{d}日"
+                daily_counts[d_key] = {
+                    "早出": sum(1 for s in staff_list if result[s][d-1] == "早出"),
+                    "日勤": sum(1 for s in staff_list if result[s][d-1] == "日勤"),
+                    "遅出": sum(1 for s in staff_list if result[s][d-1] == "遅出"),
+                    "夜勤": sum(1 for s in staff_list if result[s][d-1] == "夜勤"),
+                }
+            df_daily = pd.DataFrame(daily_counts)
+            st.dataframe(df_daily, use_container_width=True)
+            
             # Excelダウンロード機能
             output = io.BytesIO()
             with pd.ExcelWriter(output, engine='openpyxl') as writer:
                 df_res.to_excel(writer, sheet_name='シフト表')
+                df_daily.to_excel(writer, sheet_name='日別人数')
             output.seek(0)
             
             st.download_button(
-                label="📥 シフト表をExcelでダウンロード（印刷・共有用）",
+                label="📥 シフト表 ＆ 日別人数をExcelでダウンロード（印刷・共有用）",
                 data=output,
                 file_name=f"{year}年{month}月_シフト表.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
 
         with tab2:
-            st.subheader("スタッフ別 勤務回数集計")
+            st.subheader("スタッフ別 勤務回数集計（月間トータル）")
             summary_data = []
             for s in staff_list:
                 s_counts = {sh: list(result[s]).count(sh) for sh in shifts}
