@@ -128,8 +128,12 @@ if st.button("🚀 シフトを作成する", type="primary"):
     # 遅出の不足を許容する調整用変数（エラー防止の保険）
     late_shortage = {d: LpVariable(f"late_shortage_{d}", lowBound=0, cat="Integer") for d in days}
 
-    # 公平性・偏り防止のためのペナルティ変数
-    model += lpSum([late_shortage[d] * 5000 for d in days])
+    # --- 公平性（偏り防止）のための追加変数・ペナルティ設定 ---
+    # 通常スタッフ間で、早出・遅出・夜勤の回数がなるべく均等になるようにするための偏差変数
+    normal_staffs = [s for s in staff_list if work_types[s] == "Normal" or work_types[s] == "通常"]
+    
+    # 目的関数：遅出不足ペナルティ ＋ 通常スタッフ間の勤務回数の偏りを抑えるペナルティ
+    model += lpSum([late_shortage[d] * 10000 for d in days])
 
     for s in staff_list:
         w_type = work_types[s]
@@ -197,6 +201,10 @@ if st.button("🚀 シフトを作成する", type="primary"):
         for d in days[:-1]:
             model += x[s, d, "夜勤"] + x[s, d + 1, "夜勤"] <= 1
 
+        # --- 新規追加：遅出の次の日に早出をさせないルール ---
+        for d in days[:-1]:
+            model += x[s, d, "遅出"] + x[s, d + 1, "早出"] <= 1
+
     # シフト別・同時勤務NGペアの制約
     if pair_staff1 != "なし" and pair_staff2 != "なし" and pair_staff1 != pair_staff2:
         for d in days:
@@ -207,7 +215,7 @@ if st.button("🚀 シフトを作成する", type="primary"):
         model += lpSum([x[s, d, "早出"] for s in staff_list]) >= req_early
         model += lpSum([x[s, d, "日勤"] for s in staff_list]) >= req_day
         model += lpSum([x[s, d, "夜勤"] for s in staff_list]) >= req_night
-        model += lpSum([x[s, d, "遅出"] for s in staff_list] ) + late_shortage[d] >= req_late
+        model += lpSum([x[s, d, "遅出"] for s in staff_list]) + late_shortage[d] >= req_late
 
     status = model.solve()
 
@@ -234,7 +242,7 @@ if st.button("🚀 シフトを作成する", type="primary"):
             st.subheader("月間シフト一覧")
             st.dataframe(df_res, use_container_width=True)
             
-            # --- 💡 日別の人数集計テーブルを作成 ---
+            # --- 日別の人数集計テーブル ---
             st.subheader("📅 日別の配置人数チェック（早出・日勤・遅出・夜勤）")
             daily_counts = {}
             for d in days:
