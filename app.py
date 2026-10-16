@@ -115,8 +115,8 @@ with col_tp4:
 # --------------------------------------------------
 # 6. 勤務希望・希望休の入力
 # --------------------------------------------------
-st.header("5. 勤務希望（希望休・有休・指定シフト）")
-st.caption("💡 有休は『＋の休み』として反映されます。空欄は自動で公平に埋まります。")
+st.header("5. 勤務希望（希望休・指定シフト）")
+st.caption("💡 有休は勝手につきません。希望がある場所だけ『有休』や『公休』を入力してください。空欄は自動で公平に埋まります。")
 
 init_data = {f"{d}日": [""] * len(staff_list) for d in days}
 df_requests = st.data_editor(pd.DataFrame(init_data, index=staff_list), key=f"req_table_{num_staff}")
@@ -135,7 +135,7 @@ if st.button("🚀 シフトを作成する", type="primary"):
     
     late_shortage = {d: LpVariable(f"late_shortage_{d}", lowBound=0, cat="Integer") for d in days}
 
-    # 遅出の不足を最小化するペナルティ
+    # ペナルティ設定：遅出不足の防止 ＋ シフト偏り防止（上旬・中旬・下旬の分散 ＆ 満遍なく回すペナルティ）
     model += lpSum([late_shortage[d] * 10000 for d in days])
 
     for s in staff_list:
@@ -146,16 +146,26 @@ if st.button("🚀 シフトを作成する", type="primary"):
         for d in days:
             model += lpSum([x[s, d, sh] for sh in all_shifts_with_paid]) == 1
 
+        # ユーザーが希望していない日に勝手に「有休」がつかないようにする（希望がある場合のみ1）
+        for d in days:
+            val = str(df_requests.loc[s, f"{d}日"]).strip()
+            if val == "有休":
+                model += x[s, d, "有休"] == 1
+            else:
+                model += x[s, d, "有休"] == 0
+
+            # その他の希望（公休や指定シフト）の反映
+            if val in shifts:
+                model += x[s, d, val] == 1
+
         # 働き方別の個別ルール
         if w_type == "夜勤専従":
             for d in days:
                 model += x[s, d, "早出"] == 0
                 model += x[s, d, "日勤"] == 0
                 model += x[s, d, "遅出"] == 0
-            # 月間夜勤回数は7〜9回
             model += lpSum([x[s, d, "夜勤"] for d in days]) >= 7
             model += lpSum([x[s, d, "夜勤"] for d in days]) <= 9
-            # 残りは公休（夜勤と明け以外の日はすべて公休）
             model += lpSum([x[s, d, "公休"] for d in days]) == num_days - (lpSum([x[s, d, "夜勤"] for d in days]) + lpSum([x[s, d, "明け"] for d in days]))
 
         elif w_type == "遅出パート（月7回以内）":
@@ -165,26 +175,22 @@ if st.button("🚀 シフトを作成する", type="primary"):
                 model += x[s, d, "夜勤"] == 0
                 model += x[s, d, "明け"] == 0
             model += lpSum([x[s, d, "遅出"] for d in days]) <= 7
-            # 残りは公休
             model += lpSum([x[s, d, "公休"] for d in days]) == num_days - lpSum([x[s, d, "遅出"] for d in days])
 
         elif w_type == "日勤専従（夜勤不可）":
             for d in days:
                 model += x[s, d, "夜勤"] == 0
                 model += x[s, d, "明け"] == 0
-            # 公休は9日固定
             model += lpSum([x[s, d, "公休"] for d in days]) == target_off
 
         else:  # 通常スタッフ
-            # 公休は9日固定
             model += lpSum([x[s, d, "公休"] for d in days]) == target_off
             model += lpSum([x[s, d, "夜勤"] for d in days]) <= max_night_normal
-
-        # ユーザーの入力した勤務希望を反映（有休は＋の休みとして独立して機能）
-        for d in days:
-            val = str(df_requests.loc[s, f"{d}日"]).strip()
-            if val in all_shifts_with_paid:
-                model += x[s, d, val] == 1
+            
+            # 通常スタッフは上旬(1〜10)、中旬(11〜20)、下旬(21〜末)で極端に夜勤や早出が偏らないように分散させる
+            third_len = num_days // 3
+            model += lpSum([x[s, d, "夜勤"] for d in range(1, third_len + 1)]) <= 2
+            model += lpSum([x[s, d, "夜勤"] for d in range(third_len + 1, third_len * 2 + 1)]) <= 2
 
         # 最大連勤数の制限
         for d in range(1, num_days - s_max_work + 1):
@@ -193,11 +199,10 @@ if st.button("🚀 シフトを作成する", type="primary"):
                               for sh in work_shifts])
             model += work_sum <= s_max_work
 
-        # 安全・健康管理ルール（※夜勤のセット ＆ 明けの翌日の強制休みをしっかり維持）
+        # 安全・健康管理ルール（夜勤セット ＆ 明け翌日の強制休み）
         for d in range(1, num_days):
             model += x[s, d, "夜勤"] <= x[s, d + 1, "明け"]
             model += x[s, d + 1, "明け"] <= x[s, d, "夜勤"]
-            # 明けの翌日は必ず「公休」または「有休」にする
             model += x[s, d, "明け"] <= x[s, d + 1, "公休"] + x[s, d + 1, "有休"]
 
         # 夜勤の連続を禁止
