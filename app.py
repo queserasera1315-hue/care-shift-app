@@ -135,17 +135,24 @@ if st.button("🚀 シフトを作成する", type="primary"):
     
     late_shortage = {d: LpVariable(f"late_shortage_{d}", lowBound=0, cat="Integer") for d in days}
 
-    # ペナルティ変数の定義（通常スタッフ間の回数の偏りを抑えるための偏差変数）
-    # 早出、遅出、夜勤、日勤の回数がスタッフ間で平均からズレるほどペナルティをかける
+    # 通常スタッフの抽出
     normal_staffs = [s for s in staff_list if work_types[s] == "通常"]
-    
-    # 目的関数：遅出不足ペナルティ ＋ 通常スタッフ間の回数の偏りペナルティ
+
+    # 目的関数：遅出不足ペナルティ ＋ 通常スタッフ間の回数の偏りを抑える（平均化）ペナルティ
     penalty_expr = lpSum([late_shortage[d] * 10000 for d in days])
-    
-    # 通常スタッフ間で各シフトの回数が均等になるようにするペナルティ（簡易平準化）
+
+    # 通常スタッフ間で早出・遅出・夜勤の回数が均等になるように偏り防止変数を導入
     if len(normal_staffs) > 1:
-        # 各通常スタッフの個別回数を合計と比較してバランスを取る
-        pass
+        for sh_target in ["早出", "遅出", "夜勤"]:
+            for s1 in normal_staffs:
+                for s2 in normal_staffs:
+                    if s1 < s2:
+                        diff = LpVariable(f"diff_{sh_target}_{s1}_{s2}", lowBound=0, cat="Integer")
+                        sum_s1 = lpSum([x[s1, d, sh_target] for d in days])
+                        sum_s2 = lpSum([x[s2, d, sh_target] for d in days])
+                        model += sum_s1 - sum_s2 <= diff
+                        model += sum_s2 - sum_s1 <= diff
+                        penalty_expr += diff * 10  # 偏りに対するペナルティ係数
 
     model += penalty_expr
 
@@ -196,11 +203,6 @@ if st.button("🚀 シフトを作成する", type="primary"):
         else:  # 通常スタッフ
             model += lpSum([x[s, d, "公休"] for d in days]) == target_off
             model += lpSum([x[s, d, "夜勤"] for d in days]) <= max_night_normal
-            
-            # 満遍なく分散させるため、月を前半・後半に分けたとき極端に偏らないようにする緩やかな制約
-            half_days = num_days // 2
-            model += lpSum([x[s, d, "早出"] for d in range(1, half_days + 1)]) >= 1
-            model += lpSum([x[s, d, "早出"] for d in range(half_days + 1, num_days + 1)]) >= 1
 
         # 最大連勤数の制限
         for d in range(1, num_days - s_max_work + 1):
@@ -255,44 +257,54 @@ if st.button("🚀 シフトを作成する", type="primary"):
                         break
             result[s] = row
         
+        # --- シフト表データの作成 ---
         df_res = pd.DataFrame(result, index=[f"{d}日" for d in days]).T
         
-        tab1, tab2 = st.tabs(["📅 シフト表 ＆ 日別人数", "📊 スタッフ別 月間回数集計サマリー"])
+        # 【右側】スタッフごとの各シフト合計回数を追加
+        df_res["早出回数"] = [list(result[s]).count("早出") for s in staff_list]
+        df_res["日勤回数"] = [list(result[s]).count("日勤") for s in staff_list]
+        df_res["遅出回数"] = [list(result[s]).count("遅出") for s in staff_list]
+        df_res["夜勤回数"] = [list(result[s]).count("夜勤") for s in staff_list]
+        df_res["明け回数"] = [list(result[s]).count("明け") for s in staff_list]
+        df_res["公休回数"] = [list(result[s]).count("公休") for s in staff_list]
+        df_res["有休回数"] = [list(result[s]).count("有休") for s in staff_list]
+        df_res["実出勤日数"] = df_res["早出回数"] + df_res["日勤回数"] + df_res["遅出回数"] + df_res["夜勤回数"]
+
+        # 【下側】日別の各シフト配置人数を集計して行として追加
+        daily_early = [sum(1 for s in staff_list if result[s][d-1] == "早出") for d in days]
+        daily_day = [sum(1 for s in staff_list if result[s][d-1] == "日勤") for d in days]
+        daily_late = [sum(1 for s in staff_list if result[s][d-1] == "遅出") for d in days]
+        daily_night = [sum(1 for s in staff_list if result[s][d-1] == "夜勤") for d in days]
+        daily_ake = [sum(1 for s in staff_list if result[s][d-1] == "明け") for d in days]
+        daily_off = [sum(1 for s in staff_list if result[s][d-1] == "公休") for d in days]
+        daily_paid = [sum(1 for s in staff_list if result[s][d-1] == "有休") for d in days]
+
+        # 日別集計行をDataFrameに追加
+        df_res.loc["【早出 合計人数】"] = daily_early + ["-"] * 8
+        df_res.loc["【日勤 合計人数】"] = daily_day + ["-"] * 8
+        df_res.loc["【遅出 合計人数】"] = daily_late + ["-"] * 8
+        df_res.loc["【夜勤 合計人数】"] = daily_night + ["-"] * 8
+
+        tab1, tab2 = st.tabs(["📅 シフト表 ＆ 左右・上下集計", "📊 スタッフ別 月間回数詳細サマリー"])
         
         with tab1:
-            st.subheader("月間シフト一覧")
+            st.subheader("月間シフト一覧（右側に個人の回数、下部に日別人数を表示）")
             st.dataframe(df_res, use_container_width=True)
-            
-            st.subheader("📅 日別の配置人数チェック（早出・日勤・遅出・夜勤）")
-            daily_counts = {}
-            for d in days:
-                d_key = f"{d}日"
-                daily_counts[d_key] = {
-                    "早出": sum(1 for s in staff_list if result[s][d-1] == "早出"),
-                    "日勤": sum(1 for s in staff_list if result[s][d-1] == "日勤"),
-                    "遅出": sum(1 for s in staff_list if result[s][d-1] == "遅出"),
-                    "夜勤": sum(1 for s in staff_list if result[s][d-1] == "夜勤"),
-                }
-            df_daily = pd.DataFrame(daily_counts)
-            st.dataframe(df_daily, use_container_width=True)
             
             output = io.BytesIO()
             with pd.ExcelWriter(output, engine='openpyxl') as writer:
                 df_res.to_excel(writer, sheet_name='シフト表')
-                df_daily.to_excel(writer, sheet_name='日別人数')
             output.seek(0)
             
             st.download_button(
-                label="📥 シフト表 ＆ 日別人数をExcelでダウンロード",
+                label="📥 シフト表（集計付き）をExcelでダウンロード",
                 data=output,
                 file_name=f"{year}年{month}月_シフト表.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
 
         with tab2:
-            st.subheader("📊 スタッフ別 月間回数集計サマリー（偏りチェック用）")
-            st.caption("💡 1人ひとりの「早出・日勤・遅出・夜勤・明け・公休・有休」の回数と実出勤日数が横並びで一目で比較できます。")
-            
+            st.subheader("📊 スタッフ別 月間回数詳細サマリー")
             summary_data = []
             count_shifts = ["早出", "日勤", "遅出", "夜勤", "明け", "公休", "有休"]
             for s in staff_list:
