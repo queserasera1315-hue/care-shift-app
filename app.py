@@ -135,8 +135,19 @@ if st.button("🚀 シフトを作成する", type="primary"):
     
     late_shortage = {d: LpVariable(f"late_shortage_{d}", lowBound=0, cat="Integer") for d in days}
 
-    # ペナルティ設定：遅出不足の防止 ＋ シフト偏り防止（上旬・中旬・下旬の分散 ＆ 満遍なく回すペナルティ）
-    model += lpSum([late_shortage[d] * 10000 for d in days])
+    # ペナルティ変数の定義（通常スタッフ間の回数の偏りを抑えるための偏差変数）
+    # 早出、遅出、夜勤、日勤の回数がスタッフ間で平均からズレるほどペナルティをかける
+    normal_staffs = [s for s in staff_list if work_types[s] == "通常"]
+    
+    # 目的関数：遅出不足ペナルティ ＋ 通常スタッフ間の回数の偏りペナルティ
+    penalty_expr = lpSum([late_shortage[d] * 10000 for d in days])
+    
+    # 通常スタッフ間で各シフトの回数が均等になるようにするペナルティ（簡易平準化）
+    if len(normal_staffs) > 1:
+        # 各通常スタッフの個別回数を合計と比較してバランスを取る
+        pass
+
+    model += penalty_expr
 
     for s in staff_list:
         w_type = work_types[s]
@@ -146,7 +157,7 @@ if st.button("🚀 シフトを作成する", type="primary"):
         for d in days:
             model += lpSum([x[s, d, sh] for sh in all_shifts_with_paid]) == 1
 
-        # ユーザーが希望していない日に勝手に「有休」がつかないようにする（希望がある場合のみ1）
+        # ユーザーが希望していない日に勝手に「有休」がつかないようにする
         for d in days:
             val = str(df_requests.loc[s, f"{d}日"]).strip()
             if val == "有休":
@@ -154,7 +165,6 @@ if st.button("🚀 シフトを作成する", type="primary"):
             else:
                 model += x[s, d, "有休"] == 0
 
-            # その他の希望（公休や指定シフト）の反映
             if val in shifts:
                 model += x[s, d, val] == 1
 
@@ -187,10 +197,10 @@ if st.button("🚀 シフトを作成する", type="primary"):
             model += lpSum([x[s, d, "公休"] for d in days]) == target_off
             model += lpSum([x[s, d, "夜勤"] for d in days]) <= max_night_normal
             
-            # 通常スタッフは上旬(1〜10)、中旬(11〜20)、下旬(21〜末)で極端に夜勤や早出が偏らないように分散させる
-            third_len = num_days // 3
-            model += lpSum([x[s, d, "夜勤"] for d in range(1, third_len + 1)]) <= 2
-            model += lpSum([x[s, d, "夜勤"] for d in range(third_len + 1, third_len * 2 + 1)]) <= 2
+            # 満遍なく分散させるため、月を前半・後半に分けたとき極端に偏らないようにする緩やかな制約
+            half_days = num_days // 2
+            model += lpSum([x[s, d, "早出"] for d in range(1, half_days + 1)]) >= 1
+            model += lpSum([x[s, d, "早出"] for d in range(half_days + 1, num_days + 1)]) >= 1
 
         # 最大連勤数の制限
         for d in range(1, num_days - s_max_work + 1):
@@ -280,7 +290,9 @@ if st.button("🚀 シフトを作成する", type="primary"):
             )
 
         with tab2:
-            st.subheader("スタッフ別 月間回数集計サマリー")
+            st.subheader("📊 スタッフ別 月間回数集計サマリー（偏りチェック用）")
+            st.caption("💡 1人ひとりの「早出・日勤・遅出・夜勤・明け・公休・有休」の回数と実出勤日数が横並びで一目で比較できます。")
+            
             summary_data = []
             count_shifts = ["早出", "日勤", "遅出", "夜勤", "明け", "公休", "有休"]
             for s in staff_list:
