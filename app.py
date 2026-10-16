@@ -50,6 +50,7 @@ st.caption("※ 夜勤専従1人、遅出パート1人、残りは通常スタ�
 
 work_types = {}
 staff_max_work = {}
+night_exclusive_targets = {}  # 夜勤専従の目標回数を保持
 
 for s in staff_list:
     st.markdown(f"**👤 {s}**")
@@ -66,6 +67,15 @@ for s in staff_list:
             min_value=1, max_value=10, value=5,
             key=f"mw_{s}"
         )
+    
+    # もし夜勤専従なら、月間夜勤回数（7〜9回）を選べるようにする
+    if work_types[s] == "夜勤専従":
+        night_exclusive_targets[s] = st.slider(
+            f"🌙 {s} の月間夜勤回数（専従）",
+            min_value=7, max_value=9, value=8,
+            key=f"net_{s}"
+        )
+        
     st.markdown("---")
 
 # --------------------------------------------------
@@ -138,21 +148,21 @@ if st.button("🚀 シフトを作成する", type="primary"):
     # 通常スタッフの抽出
     normal_staffs = [s for s in staff_list if work_types[s] == "通常"]
 
-    # 目的関数：遅出不足ペナルティ ＋ 通常スタッフ間の回数の偏りを抑える（平均化）ペナルティ
+    # 目的関数：遅出不足ペナルティ ＋ 通常スタッフ間の夜勤回数の平均化（偏り防止ペナルティ）
     penalty_expr = lpSum([late_shortage[d] * 10000 for d in days])
 
-    # 通常スタッフ間で早出・遅出・夜勤の回数が均等になるように偏り防止変数を導入
+    # 通常スタッフ同士の夜勤回数の差を最小化
     if len(normal_staffs) > 1:
-        for sh_target in ["早出", "遅出", "夜勤"]:
-            for s1 in normal_staffs:
-                for s2 in normal_staffs:
-                    if s1 < s2:
-                        diff = LpVariable(f"diff_{sh_target}_{s1}_{s2}", lowBound=0, cat="Integer")
-                        sum_s1 = lpSum([x[s1, d, sh_target] for d in days])
-                        sum_s2 = lpSum([x[s2, d, sh_target] for d in days])
-                        model += sum_s1 - sum_s2 <= diff
-                        model += sum_s2 - sum_s1 <= diff
-                        penalty_expr += diff * 10  # 偏りに対するペナルティ係数
+        for i in range(len(normal_staffs)):
+            for j in range(i + 1, len(normal_staffs)):
+                s1 = normal_staffs[i]
+                s2 = normal_staffs[j]
+                night_diff = LpVariable(f"night_diff_{s1}_{s2}", lowBound=0, cat="Integer")
+                sum_n1 = lpSum([x[s1, d, "夜勤"] for d in days])
+                sum_n2 = lpSum([x[s2, d, "夜勤"] for d in days])
+                model += sum_n1 - sum_n2 <= night_diff
+                model += sum_n2 - sum_n1 <= night_diff
+                penalty_expr += night_diff * 50  # 通常スタッフ間の夜勤回数を均等にする
 
     model += penalty_expr
 
@@ -181,8 +191,10 @@ if st.button("🚀 シフトを作成する", type="primary"):
                 model += x[s, d, "早出"] == 0
                 model += x[s, d, "日勤"] == 0
                 model += x[s, d, "遅出"] == 0
-            model += lpSum([x[s, d, "夜勤"] for d in days]) >= 7
-            model += lpSum([x[s, d, "夜勤"] for d in days]) <= 9
+            # 自分で選んだ夜勤回数に固定
+            target_n_count = night_exclusive_targets[s]
+            model += lpSum([x[s, d, "夜勤"] for d in days]) == target_n_count
+            # 残りは公休（夜勤と明け以外）
             model += lpSum([x[s, d, "公休"] for d in days]) == num_days - (lpSum([x[s, d, "夜勤"] for d in days]) + lpSum([x[s, d, "明け"] for d in days]))
 
         elif w_type == "遅出パート（月7回以内）":
