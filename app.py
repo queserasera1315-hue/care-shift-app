@@ -148,12 +148,14 @@ if st.button("🚀 シフトを作成する", type="primary"):
         for d in days:
             model += lpSum([x[s, d, sh] for sh in all_shifts_with_paid]) == 1
 
+        # 働き方別のルール設定
         if w_type == "夜勤専従":
             model += lpSum([x[s, d, "公休"] + x[s, d, "有休"] for d in days]) == target_off
             for d in days:
                 model += x[s, d, "早出"] == 0
                 model += x[s, d, "日勤"] == 0
                 model += x[s, d, "遅出"] == 0
+            # 夜勤回数は8〜9回に設定
             model += lpSum([x[s, d, "夜勤"] for d in days]) >= 8
             model += lpSum([x[s, d, "夜勤"] for d in days]) <= 9
 
@@ -176,12 +178,11 @@ if st.button("🚀 シフトを作成する", type="primary"):
             model += lpSum([x[s, d, "公休"] + x[s, d, "有休"] for d in days]) == target_off
             model += lpSum([x[s, d, "夜勤"] for d in days]) <= max_night_normal
             
-            # --- 追加：夜勤が前半・後半に偏りすぎないようにする制限 ---
+            # 通常スタッフの夜勤が前半・後半に偏りすぎないようにする制限
             if max_night_normal >= 2:
                 mid_day = num_days // 2
                 first_half = [d for d in days if d <= mid_day]
                 second_half = [d for d in days if d > mid_day]
-                # 前半・後半それぞれで夜勤が上限の大部分（例: 上限-1回など）を占めないように制限
                 half_limit = max(1, max_night_normal - 1)
                 model += lpSum([x[s, d, "夜勤"] for d in first_half]) <= half_limit
                 model += lpSum([x[s, d, "夜勤"] for d in second_half]) <= half_limit
