@@ -8,7 +8,7 @@ import io
 # 1. ページ基本設定
 # --------------------------------------------------
 st.set_page_config(page_title="介護シフト自動作成アプリ", layout="wide")
-st.title("🏥 介護シフト自動作成アプリ（完全版）")
+st.title("🏥 介護シフト自動作成アプリ（シンプル版）")
 
 # --------------------------------------------------
 # 2. 基本設定（人数・年月）
@@ -24,7 +24,7 @@ with col_y:
 with col_num:
     num_staff = st.slider("スタッフ人数", min_value=6, max_value=8, value=7, key="main_staff_slider")
 
-# 月の日数と曜日リストの作成
+# 月の日数を計算
 if month in [1, 3, 5, 7, 8, 10, 12]:
     num_days = 31
 elif month in [4, 6, 9, 11]:
@@ -33,11 +33,7 @@ else:
     num_days = 29 if (year % 4 == 0 and (year % 100 != 0 or year % 400 == 0)) else 28
 
 days = list(range(1, num_days + 1))
-weekdays_jp = ["月", "火", "水", "木", "金", "土", "日"]
-
-# 日付用のマルチインデックス（上段：日にち、下段：曜日）を作成
-date_tuples = [(f"{d}日", weekdays_jp[datetime.date(year, month, d).weekday()]) for d in days]
-req_col_multi = pd.MultiIndex.from_tuples(date_tuples)
+col_date_labels = [f"{d}日" for d in days]
 
 all_staff_pool = ["スタッフA", "スタッフB", "スタッフC", "スタッフD", "スタッフE", "スタッフF", "スタッフG", "スタッフH"]
 staff_list = all_staff_pool[:num_staff]
@@ -127,12 +123,12 @@ with col_tp4:
     pair2_shift2 = st.selectbox("シフト2 (ペア2)", work_shifts, key="p2_sh2")
 
 # --------------------------------------------------
-# 6. 勤務希望・希望休の入力（2段ヘッダー）
+# 6. 勤務希望・希望休の入力
 # --------------------------------------------------
 st.header("5. 勤務希望（希望休・指定シフト）")
 st.caption("💡 有休は勝手につきません。希望がある場所だけ『有』や『休』を入力してください。空欄は自動で公平に埋まります。")
 
-init_data = {col: [""] * len(staff_list) for col in req_col_multi}
+init_data = {col: [""] * len(staff_list) for col in col_date_labels}
 df_requests = st.data_editor(pd.DataFrame(init_data, index=staff_list), key=f"req_table_{num_staff}")
 
 # --------------------------------------------------
@@ -175,9 +171,9 @@ if st.button("🚀 シフトを作成する", type="primary"):
         for d in days:
             model += lpSum([x[s, d, sh] for sh in all_shifts_with_paid]) == 1
 
-        # ユーザー希望の反映（希望のない日には有休を自動付与しない）
+        # ユーザー希望の反映
         for i, d in enumerate(days):
-            col_label = date_tuples[i]
+            col_label = col_date_labels[i]
             val = str(df_requests.loc[s, col_label]).strip()
             if val == "有休" or val == "有":
                 model += x[s, d, "有休"] == 1
@@ -288,35 +284,17 @@ if st.button("🚀 シフトを作成する", type="primary"):
         for s in staff_list:
             result_symbols[s] = [symbol_map.get(sh, sh) for sh in result[s]]
 
-        # --- 結果表示用のマルチインデックス（日付＋集計列） ---
-        summary_tuples = [
-            ("回数", "早出"),
-            ("回数", "日勤"),
-            ("回数", "遅出"),
-            ("回数", "夜勤"),
-            ("回数", "明け"),
-            ("回数", "公休"),
-            ("回数", "有休"),
-            ("回数", "実出勤"),
-        ]
-        res_col_multi = pd.MultiIndex.from_tuples(date_tuples + summary_tuples)
-
-        # スタッフごとのシフト＋集計データを構築
-        res_data_rows = []
-        for s in staff_list:
-            s_shifts = result_symbols[s]
-            early_c = list(result[s]).count("早出")
-            day_c = list(result[s]).count("日勤")
-            late_c = list(result[s]).count("遅出")
-            night_c = list(result[s]).count("夜勤")
-            ake_c = list(result[s]).count("明け")
-            off_c = list(result[s]).count("公休")
-            paid_c = list(result[s]).count("有休")
-            work_c = early_c + day_c + late_c + night_c
-            
-            res_data_rows.append(s_shifts + [early_c, day_c, late_c, night_c, ake_c, off_c, paid_c, work_c])
-
-        df_res = pd.DataFrame(res_data_rows, index=staff_list, columns=res_col_multi)
+        # --- シフト表データの作成 ---
+        df_res = pd.DataFrame(result_symbols, index=col_date_labels).T
+        
+        df_res["早出回数"] = [list(result[s]).count("早出") for s in staff_list]
+        df_res["日勤回数"] = [list(result[s]).count("日勤") for s in staff_list]
+        df_res["遅出回数"] = [list(result[s]).count("遅出") for s in staff_list]
+        df_res["夜勤回数"] = [list(result[s]).count("夜勤") for s in staff_list]
+        df_res["明け回数"] = [list(result[s]).count("明け") for s in staff_list]
+        df_res["公休回数"] = [list(result[s]).count("公休") for s in staff_list]
+        df_res["有休回数"] = [list(result[s]).count("有休") for s in staff_list]
+        df_res["実出勤日数"] = df_res["早出回数"] + df_res["日勤回数"] + df_res["遅出回数"] + df_res["夜勤回数"]
 
         # --- 下側の「日別合計人数」行の追加 ---
         daily_early = [str(sum(1 for s in staff_list if result[s][d-1] == "早出")) for d in days]
@@ -324,18 +302,17 @@ if st.button("🚀 シフトを作成する", type="primary"):
         daily_late = [str(sum(1 for s in staff_list if result[s][d-1] == "遅出")) for d in days]
         daily_night = [str(sum(1 for s in staff_list if result[s][d-1] == "夜勤")) for d in days]
 
-        # マルチインデックス構造に合わせて日別集計行を追加
-        empty_summary_vals = ["-"] * len(summary_tuples)
+        empty_summary_vals = ["-"] * 8
         
-        df_res.loc[("【早出 合計人数】", "")] = daily_early + empty_summary_vals
-        df_res.loc[("【日勤 合計人数】", "")] = daily_day + empty_summary_vals
-        df_res.loc[("【遅出 合計人数】", "")] = daily_late + empty_summary_vals
-        df_res.loc[("【夜勤 合計人数】", "")] = daily_night + empty_summary_vals
+        df_res.loc["【早出 合計人数】"] = daily_early + empty_summary_vals
+        df_res.loc["【日勤 合計人数】"] = daily_day + empty_summary_vals
+        df_res.loc["【遅出 合計人数】"] = daily_late + empty_summary_vals
+        df_res.loc["【夜勤 合計人数】"] = daily_night + empty_summary_vals
 
         tab1, tab2 = st.tabs(["📅 シフト表 ＆ 左右・上下集計", "📊 スタッフ別 月間回数詳細サマリー"])
         
         with tab1:
-            st.subheader("月間シフト一覧（日付下に曜日を表示・記号表示）")
+            st.subheader("月間シフト一覧（記号表示 ＆ 集計付き）")
             st.dataframe(df_res, use_container_width=True)
             
             output = io.BytesIO()
